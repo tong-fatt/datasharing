@@ -1,0 +1,170 @@
+---
+title: "Machine Learning Assignment"
+author: "Tong-Fatt Ho"
+date: "16 September 2016"
+output: html_document
+
+## 1. Synopsis
+The goal of this project is to use data collected from devices such as Jawbone Up, Nike Fuelband and Fitbit, worn by 6 participants on their belts, forearm, arm and dumbell, to find out how well they did certain instructed tasks based on specific instructions. These tasks were designed to compare the data collected on tasks that were done correctly and incorretly in 5 dfferent ways. Machine learning algorithm, namely Random Forecast, is used to analyze and predict. Differences in accuracies of prediction under different approaches will be compared and analyzed: a) no pre-process b) pre-process with scaling and centreing c) PCA with scaling and centreing
+
+
+## 2. Load Libraries
+```{r libraries }
+library(ISLR)
+library(ggplot2)
+library(lattice)
+library(kernlab)
+library(caret)
+library(rattle)
+library(rpart)
+library(parallel)
+library(doParallel)
+```
+
+##3. Data Preparation
+
+### 3.1 Load Data
+```{r dataload}
+pmltrain <- read.csv("pml-training.csv")
+pmltest <- read.csv("pml-testing.csv")
+```
+
+### 3.2 Remove blanks, NA and non-related variables
+```{r trash}
+trash_train = sapply(1:dim(pmltrain)[2],function(x) any(is.na(pmltrain[,x])|pmltrain[,x]==""))
+trash_test = sapply(1:dim(pmltest)[2],function(x) any(is.na(pmltest[,x])|pmltest[,x]==""))
+
+cleaned_pmltrain <- pmltrain[,!trash_train]
+cleaned_pmltest <- pmltest[,!trash_test]
+
+pmltrainP <- cleaned_pmltrain[,grepl("belt|dumbbell|arm|classe", names(cleaned_pmltrain))]
+pmltestP <- cleaned_pmltest[,grepl("belt|dumbbell|arm|classe", names(cleaned_pmltest))]
+
+dim(pmltrainP);dim(pmltestP) 
+```
+
+      The training and testing data sets have different number of variables. Hence, need to know what the differences are between the 2 datasets in terms of variables.
+```{r data_compare}
+
+bug <- grep("TRUE", names(pmltrain)!=names(pmltest))
+names(pmltrain[bug])
+names(pmltest[bug])
+```
+
+      The difference is only in column 53, rest of columns have the same variables between the respective columns between the two datasets. Training data contains 'classe' data whereas testing data contains 'problem ID'in column 53.
+      
+## 4. Further Partitioning Datasets into Training and Validation
+```{r data_partitioning}
+seed <- as.numeric(as.Date("2017-09-16"))
+set.seed(seed)
+InTrain <- createDataPartition(pmltrainP$classe, p = 0.6)[[1]]
+train <- pmltrainP[InTrain, ]
+valid8 <- pmltrainP[-InTrain,]
+```
+
+## 5.Perform Exploratory Analysis on Data
+
+### 5.1 Identify highly correlated predictors
+```{r exploratory1}
+M <- abs(cor(train[,-53]))
+diag(M)<- 0
+which(M > 0.8, arr.ind = TRUE)
+plot(train[,25],train[,26])
+```
+
+  - The plot above shows high correlation betwwen column 25 and 26, among others. It suggest that using PCA predictors  reduce the number of predictors may help to reduce noise by averaging.
+
+  - However, the plot below does not show clear separation of the performance classification in classe. It does not look like PCA will make models fit better. The expected out of sample error may not be mitigated by applying PCA. be This will be explored below.
+```{r explortory2}
+prComp <- prcomp(train[,-53])
+qplot(prComp$x[,1],prComp$x[,2],color = train$classe)
+
+```
+
+
+### 5.2 Perform PCA pre-processes
+```{r PCA_preprocess}
+set.seed(seed)
+preProc <- preProcess(train, method = "pca")
+preProc
+```
+  - apply pre-process on train and validate data sets for model fit in following sections
+
+```{r apply_PCA}
+trainPC <- predict(preProc, train[,-53])
+valid8PC <- predict(preProc, valid8[,-53])
+```
+
+  - Model Fitting
+```{r model_fit_PCA }
+team <- makeCluster(detectCores() - 1)
+registerDoParallel(team)     
+tuner <- trainControl(method="cv", number=5, classProbs = TRUE, allowParallel=TRUE, verboseIter=FALSE)
+
+system.time(modelfitpca <- train(x = trainPC, y = train$classe, method = "rf", trControl = tuner))
+
+modelfitpca$finalModel
+```
+
+  - Test model using validation dataset
+```{r validate_PCA}
+predicthat <- predict(modelfitpca, valid8PC)
+confusionMatrix(predicthat, valid8[,53])
+```
+
+  - Perform C&S Pre-processing
+```{r C&S Preprocess}
+set.seed(seed)
+preProc <- preProcess(train[,-53])
+preProc
+```
+
+### 5.3 Apply C&S pre-processing on predictors and model fitting
+```{r apply_cns}
+trainPC <- predict(preProc, valid8[,-53])
+valid8PC <- predict(preProc, valid8[,-53])
+```
+
+  - Applying C&S predictors and model fitting
+```{r model_fit_C&S}  
+trainPC <- predict(preProc, train[,-53])
+system.time(modelfitcns <- train(y = train[,53], x = trainPC, method = "rf", trControl = tuner))
+
+modelfitcns$finalModel
+```
+
+  - Test model using validation dataset
+```{r validate_C&S}
+predicthat <- predict(modelfitcns, valid8PC)
+confusionMatrix(predicthat, valid8[,53])
+```
+
+
+### 5.4 Model fitting using unprocessed predictors
+```{r model_fit_Simple }
+set.seed(seed)
+system.time(modelfits <- train(classe ~ ., method = "rf", data = train, trControl = tuner))
+modelfits$finalModel
+
+stopCluster(team)
+```
+
+  - Test model using validate data set
+```{r validate_Simple}
+predicthat <- predict(modelfits, valid8[,-53])
+confusionMatrix(predicthat, valid8[,53])
+```
+
+## 6. Conclusion
+Based on the accuracy performance of the 3 approaches above, applying PCA on predictors in preprocessing does not seem to have helped to improve the accuracy. Even without applying any pre-processing, running model fit on the collected data directly achieved almost as good performance as predictors that have been pre-processed for standardizing to scale and centres. Therefore, the test data set will be applied directly for the next and final part of this assignment by running model fit without pre-processing the raw data.
+
+## 7. Final test prediction using test dataset directly with no pre-processing
+```{r final_test}
+predicthat <- predict(modelfits, pmltestP[,-53])
+
+```
+## 8. Predicted test data for submission
+```{r submission}
+pmltestsubmit <- cbind(predicthat,cleaned_pmltest[,!grepl("belt|dumbbell|arm|classe", names(cleaned_pmltest))])
+pmltestsubmit
+```
